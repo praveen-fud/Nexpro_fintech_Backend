@@ -11,8 +11,7 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.core.config import get_settings  # noqa: E402
-from app.core.database import Base  # noqa: E402
+from app.core.database import Base, database_url  # noqa: E402
 from app.models import *  # noqa: E402,F403  (registers every model on Base.metadata)
 
 # this is the Alembic Config object, which provides
@@ -26,9 +25,9 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# Use the same DATABASE_URL the app reads from .env, so migrations never
-# drift from runtime config.
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Use the same (normalized) DATABASE_URL the app connects with, so
+# migrations never drift from runtime config.
+config.set_main_option("sqlalchemy.url", database_url)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
