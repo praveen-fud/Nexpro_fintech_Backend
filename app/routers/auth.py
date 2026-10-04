@@ -62,6 +62,12 @@ async def sign_up(body: SignUpRequest, db: AsyncSession = Depends(get_db)) -> Us
         mobile_number=body.mobile_number,
         password_hash=hash_password(body.password),
         role=Role.CUSTOMER,
+        # OTP verification is disabled for now (no real SMS/email provider
+        # connected yet) — accounts are usable immediately. The /verify-otp
+        # endpoint and login's email_verified check are left in place so
+        # this can be re-enabled later by just flipping this back to False
+        # and reinstating the frontend's OTP step.
+        email_verified=True,
     )
     db.add(user)
     await db.commit()
@@ -90,6 +96,8 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email/mobile number or password.")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account has been deactivated.")
+    if not user.email_verified:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Please verify your email before signing in.")
 
     access_token = await _issue_session(db, response, user)
     return {"accessToken": access_token, "user": user}
@@ -107,7 +115,14 @@ async def refresh(request: Request, response: Response, db: AsyncSession = Depen
     ).scalar_one_or_none()
 
     now = datetime.now(UTC)
-    if stored is None or stored.revoked_at is not None or stored.expires_at < now:
+    # SQLite drops tzinfo on read-back even for a DateTime(timezone=True)
+    # column (Postgres doesn't have this problem) — normalize before
+    # comparing so this doesn't blow up with "can't compare offset-naive
+    # and offset-aware datetimes" in local/SQLite dev.
+    expires_at = stored.expires_at if stored else None
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if stored is None or stored.revoked_at is not None or expires_at < now:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired. Please sign in again.")
 
     user = (await db.execute(select(User).where(User.id == stored.user_id))).scalar_one_or_none()
