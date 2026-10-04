@@ -1,0 +1,38 @@
+# Environment
+.env
+.env.*.local
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Database
+*.sqlite3
+*.db
+dev.db
+
+# Uploads (Stage 1 local dev storage)
+uploads/
+
+# Logs
+*.log
+
+# Testing
+coverage/
+.coverage
+htmlcov/
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
