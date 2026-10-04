@@ -3,12 +3,14 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.enums import FundingMethod, FundingStatus, KycStatus, Role
 from app.models.funding import FundingRequest, IdempotencyRecord, PaymentAttempt
+from app.models.kyc import KycDocument, KycProfile
 from app.models.user import User
 from app.schemas.funding import (
     FundingCustomerSummary,
@@ -17,10 +19,22 @@ from app.schemas.funding import (
     RejectFundingRequestBody,
     RequestInformationBody,
 )
+from app.schemas.kyc import (
+    KycBankAccountResponse,
+    KycCustomerSummary,
+    KycDocumentResponse,
+    KycPersonalInfoResponse,
+    KycProfileResponse,
+    KycQueueItemResponse,
+    KycRejectBody,
+    KycRequestInformationBody,
+    KycReviewDetailResponse,
+)
 from app.schemas.operations import FundingByMethod, FundingVolumeByDay, NeedsAttentionItem, OperationsOverviewResponse
 from app.security.deps import require_roles
 from app.services.checklist_service import build_verification_checklist
 from app.services.funding_service import approve_funding_request, mark_under_review, reject_funding_request, request_additional_information
+from app.services.kyc_service import approve_kyc, reject_kyc, request_kyc_additional_information
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
@@ -266,3 +280,184 @@ async def request_information(
     fr, customer = await _load_request_and_customer(db, funding_request_id)
     fr = await request_additional_information(db, fr, user, body.message)
     return _request_to_response(fr, customer.full_name)
+
+
+def _kyc_to_response(profile: KycProfile) -> KycProfileResponse:
+    personal_info = None
+    if profile.date_of_birth and profile.address:
+        personal_info = KycPersonalInfoResponse(
+            date_of_birth=profile.date_of_birth.isoformat(),
+            address=profile.address,
+            city=profile.city or "",
+            state=profile.state or "",
+            pin_code=profile.pin_code or "",
+        )
+
+    bank_account = None
+    if profile.account_number_masked:
+        bank_account = KycBankAccountResponse(
+            account_holder_name=profile.account_holder_name or "",
+            account_number_masked=profile.account_number_masked,
+            ifsc=profile.ifsc or "",
+        )
+
+    return KycProfileResponse(
+        id=profile.id,
+        customer_id=profile.user_id,
+        status=profile.status,
+        submitted_at=profile.submitted_at,
+        personal_info=personal_info,
+        documents=[
+            KycDocumentResponse(
+                id=doc.id,
+                type=doc.document_type,
+                file_name=doc.file_name,
+                status=doc.status,
+                uploaded_at=doc.uploaded_at,
+            )
+            for doc in profile.documents
+        ],
+        bank_account=bank_account,
+        review_notes=profile.review_notes,
+    )
+
+
+@router.get("/kyc-profiles", response_model=list[KycQueueItemResponse])
+async def list_kyc_profiles(
+    status_filter: KycStatus | None = Query(None, alias="status"),
+    search: str | None = None,
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> list[KycQueueItemResponse]:
+    query = select(KycProfile, User).join(User, User.id == KycProfile.user_id)
+    if status_filter is not None:
+        query = query.where(KycProfile.status == status_filter)
+    if search:
+        pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                User.full_name.ilike(pattern),
+                User.email.ilike(pattern),
+                User.mobile_number.ilike(pattern),
+            )
+        )
+    query = query.order_by(KycProfile.created_at.desc()).limit(200)
+
+    rows = (await db.execute(query)).all()
+    results: list[KycQueueItemResponse] = []
+    for profile, customer in rows:
+        await db.refresh(profile, attribute_names=["documents"])
+        results.append(
+            KycQueueItemResponse(
+                id=profile.id,
+                customer_id=profile.user_id,
+                customer_name=customer.full_name,
+                customer_email=customer.email,
+                customer_mobile=customer.mobile_number,
+                status=profile.status,
+                submitted_at=profile.submitted_at,
+                documents_count=len(profile.documents),
+            )
+        )
+    return results
+
+
+async def _load_profile_and_customer(db: AsyncSession, profile_id: uuid.UUID) -> tuple[KycProfile, User]:
+    row = (
+        await db.execute(
+            select(KycProfile, User).join(User, User.id == KycProfile.user_id).where(KycProfile.id == profile_id)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="KYC profile not found.")
+    return row[0], row[1]
+
+
+@router.get("/kyc-profiles/{profile_id}", response_model=KycReviewDetailResponse)
+async def get_kyc_profile_detail(
+    profile_id: uuid.UUID,
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> KycReviewDetailResponse:
+    profile, customer = await _load_profile_and_customer(db, profile_id)
+    await db.refresh(profile, attribute_names=["documents"])
+    base = _kyc_to_response(profile)
+
+    return KycReviewDetailResponse(
+        **base.model_dump(by_alias=False),
+        customer=KycCustomerSummary(
+            full_name=customer.full_name,
+            email=customer.email,
+            mobile_number=customer.mobile_number,
+            customer_since=customer.created_at,
+        ),
+    )
+
+
+@router.post("/kyc-profiles/{profile_id}/approve", response_model=KycProfileResponse)
+async def approve_kyc_profile(
+    profile_id: uuid.UUID,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> KycProfileResponse:
+    _check_idempotency_key(idempotency_key)
+
+    endpoint = f"kyc-approve:{profile_id}"
+    existing_key = (
+        await db.execute(select(IdempotencyRecord).where(IdempotencyRecord.key == idempotency_key))
+    ).scalar_one_or_none()
+    if existing_key is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="This approval has already been processed."
+        )
+    db.add(IdempotencyRecord(key=idempotency_key, endpoint=endpoint))
+    await db.commit()
+
+    profile, customer = await _load_profile_and_customer(db, profile_id)
+    profile = await approve_kyc(db, profile, customer, user)
+    await db.refresh(profile, attribute_names=["documents"])
+    return _kyc_to_response(profile)
+
+
+@router.post("/kyc-profiles/{profile_id}/reject", response_model=KycProfileResponse)
+async def reject_kyc_profile(
+    profile_id: uuid.UUID,
+    body: KycRejectBody,
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> KycProfileResponse:
+    profile, customer = await _load_profile_and_customer(db, profile_id)
+    profile = await reject_kyc(db, profile, customer, user, body.reason)
+    await db.refresh(profile, attribute_names=["documents"])
+    return _kyc_to_response(profile)
+
+
+@router.post("/kyc-profiles/{profile_id}/request-information", response_model=KycProfileResponse)
+async def request_kyc_information(
+    profile_id: uuid.UUID,
+    body: KycRequestInformationBody,
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> KycProfileResponse:
+    profile, customer = await _load_profile_and_customer(db, profile_id)
+    profile = await request_kyc_additional_information(db, profile, customer, user, body.message)
+    await db.refresh(profile, attribute_names=["documents"])
+    return _kyc_to_response(profile)
+
+
+@router.get("/kyc-profiles/{profile_id}/documents/{document_id}")
+async def get_kyc_document(
+    profile_id: uuid.UUID,
+    document_id: uuid.UUID,
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    document = (
+        await db.execute(
+            select(KycDocument).where(KycDocument.id == document_id, KycDocument.kyc_profile_id == profile_id)
+        )
+    ).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    return FileResponse(document.file_path, filename=document.file_name)

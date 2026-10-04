@@ -1,11 +1,14 @@
 import json
+import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.enums import Role
-from app.models.kyc import KycProfile
+from app.models.kyc import KycDocument, KycProfile
 from app.models.user import User
 from app.schemas.kyc import (
     KycBankAccountResponse,
@@ -93,3 +96,22 @@ async def submit_kyc_endpoint(
     )
     await db.refresh(profile, attribute_names=["documents"])
     return _to_response(profile)
+
+
+@router.get("/documents/{document_id}")
+async def get_my_kyc_document(
+    document_id: uuid.UUID,
+    user: User = Depends(require_roles(Role.CUSTOMER)),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    row = (
+        await db.execute(
+            select(KycDocument, KycProfile)
+            .join(KycProfile, KycProfile.id == KycDocument.kyc_profile_id)
+            .where(KycDocument.id == document_id)
+        )
+    ).first()
+    if row is None or row[1].user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    document = row[0]
+    return FileResponse(document.file_path, filename=document.file_name)

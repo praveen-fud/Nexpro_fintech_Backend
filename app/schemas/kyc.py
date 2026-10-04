@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime
 
+from pydantic import Field
+
 from app.models.enums import KycDocumentStatus, KycDocumentType, KycStatus
 from app.schemas.common import CamelModel
 
@@ -51,3 +53,33 @@ class KycProfileResponse(CamelModel):
     documents: list[KycDocumentResponse]
     bank_account: KycBankAccountResponse | None
     review_notes: str | None
+
+
+class KycCustomerSummary(CamelModel):
+    full_name: str
+    email: str
+    mobile_number: str
+    customer_since: datetime
+
+
+class KycQueueItemResponse(CamelModel):
+    id: uuid.UUID
+    customer_id: uuid.UUID
+    customer_name: str
+    customer_email: str
+    customer_mobile: str
+    status: KycStatus
+    submitted_at: datetime | None
+    documents_count: int
+
+
+class KycReviewDetailResponse(KycProfileResponse):
+    customer: KycCustomerSummary
+
+
+class KycRejectBody(CamelModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class KycRequestInformationBody(CamelModel):
+    message: str = Field(min_length=3, max_length=500)

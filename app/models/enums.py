@@ -30,6 +30,22 @@ class KycDocumentStatus(str, enum.Enum):
     REJECTED = "REJECTED"
 
 
+# Valid KYC-profile state transitions. Enforced centrally in
+# services/kyc_service.py — never mutate `status` directly elsewhere.
+# Submission is modeled as "current status -> UNDER_REVIEW", which is why
+# UNDER_REVIEW isn't in its own allowed-target set (blocks re-submitting
+# while already under review) and APPROVED's set is empty (blocks
+# re-submitting after approval).
+KYC_STATUS_TRANSITIONS: dict[KycStatus, set[KycStatus]] = {
+    KycStatus.NOT_STARTED: {KycStatus.UNDER_REVIEW},
+    KycStatus.SUBMITTED: {KycStatus.UNDER_REVIEW},
+    KycStatus.UNDER_REVIEW: {KycStatus.APPROVED, KycStatus.REJECTED, KycStatus.ADDITIONAL_INFORMATION_REQUIRED},
+    KycStatus.ADDITIONAL_INFORMATION_REQUIRED: {KycStatus.UNDER_REVIEW},
+    KycStatus.APPROVED: set(),
+    KycStatus.REJECTED: {KycStatus.UNDER_REVIEW},
+}
+
+
 class FundingMethod(str, enum.Enum):
     CREDIT_CARD = "CREDIT_CARD"
     UPI = "UPI"

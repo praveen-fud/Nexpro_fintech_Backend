@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.core.database import get_db
-from app.models.enums import FundingMethod, Role
+from app.models.enums import FundingMethod, KycStatus, Role
 from app.models.funding import FundingRequest
 from app.models.user import User
 from app.schemas.funding import BeneficiaryInfoResponse, FundingQuoteResponse, FundingRequestResponse
@@ -72,6 +72,12 @@ async def create_request(
     user: User = Depends(require_roles(Role.CUSTOMER)),
     db: AsyncSession = Depends(get_db),
 ) -> FundingRequestResponse:
+    if user.kyc_status != KycStatus.APPROVED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Complete identity verification before funding your wallet.",
+        )
+
     content_type = request.headers.get("content-type", "")
     proof_path: str | None = None
 
