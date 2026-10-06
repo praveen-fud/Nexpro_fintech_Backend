@@ -8,10 +8,12 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.enums import FundingMethod, FundingStatus, KycStatus, Role
+from app.models.enums import FundingMethod, FundingStatus, KycStatus, Role, TransactionStatus, TransactionType
 from app.models.funding import FundingRequest, IdempotencyRecord, PaymentAttempt
 from app.models.kyc import KycDocument, KycProfile
+from app.models.transaction import Transaction
 from app.models.user import User
+from app.models.wallet import Wallet
 from app.schemas.funding import (
     FundingCustomerSummary,
     FundingDetailResponse,
@@ -30,11 +32,24 @@ from app.schemas.kyc import (
     KycRequestInformationBody,
     KycReviewDetailResponse,
 )
-from app.schemas.operations import FundingByMethod, FundingVolumeByDay, NeedsAttentionItem, OperationsOverviewResponse
+from app.schemas.operations import (
+    CustomerDetailResponse,
+    CustomerListItem,
+    CustomerListResponse,
+    FundingByMethod,
+    FundingVolumeByDay,
+    NeedsAttentionItem,
+    OperationsOverviewResponse,
+    TransactionListItem,
+    TransactionListResponse,
+    WalletListItem,
+    WalletListResponse,
+)
 from app.security.deps import require_roles
 from app.services.checklist_service import build_verification_checklist
 from app.services.funding_service import approve_funding_request, mark_under_review, reject_funding_request, request_additional_information
 from app.services.kyc_service import approve_kyc, reject_kyc, request_kyc_additional_information
+from app.services.wallet_service import get_available_balance, get_pending_balance
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
@@ -461,3 +476,193 @@ async def get_kyc_document(
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
     return FileResponse(document.file_path, filename=document.file_name)
+
+
+# ── Customers ──────────────────────────────────────────────────────────────────
+
+@router.get("/customers", response_model=CustomerListResponse)
+async def list_customers(
+    search: str | None = None,
+    kyc_status: KycStatus | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> CustomerListResponse:
+    query = select(User).where(User.role == Role.CUSTOMER)
+    if search:
+        pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                User.full_name.ilike(pattern),
+                User.email.ilike(pattern),
+                User.mobile_number.ilike(pattern),
+            )
+        )
+    if kyc_status is not None:
+        query = query.where(User.kyc_status == kyc_status)
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    rows = (
+        await db.execute(
+            query.order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        )
+    ).scalars().all()
+
+    return CustomerListResponse(
+        items=[
+            CustomerListItem(
+                id=u.id,
+                full_name=u.full_name,
+                email=u.email,
+                mobile_number=u.mobile_number,
+                kyc_status=u.kyc_status,
+                is_active=u.is_active,
+                created_at=u.created_at,
+            )
+            for u in rows
+        ],
+        total=total,
+    )
+
+
+@router.get("/customers/{customer_id}", response_model=CustomerDetailResponse)
+async def get_customer_detail(
+    customer_id: uuid.UUID,
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> CustomerDetailResponse:
+    customer = (
+        await db.execute(select(User).where(User.id == customer_id, User.role == Role.CUSTOMER))
+    ).scalar_one_or_none()
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found.")
+
+    wallet = (await db.execute(select(Wallet).where(Wallet.user_id == customer_id))).scalar_one_or_none()
+
+    available: Decimal | None = None
+    pending: Decimal | None = None
+    wallet_number: str | None = None
+    if wallet is not None:
+        wallet_number = wallet.wallet_number
+        available = await get_available_balance(db, wallet.id)
+        pending = await get_pending_balance(db, wallet.id)
+
+    return CustomerDetailResponse(
+        id=customer.id,
+        full_name=customer.full_name,
+        email=customer.email,
+        mobile_number=customer.mobile_number,
+        kyc_status=customer.kyc_status,
+        is_active=customer.is_active,
+        created_at=customer.created_at,
+        wallet_number=wallet_number,
+        available_balance=available,
+        pending_balance=pending,
+    )
+
+
+# ── Wallets ────────────────────────────────────────────────────────────────────
+
+@router.get("/wallets", response_model=WalletListResponse)
+async def list_wallets(
+    search: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> WalletListResponse:
+    query = select(Wallet, User).join(User, User.id == Wallet.user_id)
+    if search:
+        pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                Wallet.wallet_number.ilike(pattern),
+                User.full_name.ilike(pattern),
+                User.email.ilike(pattern),
+            )
+        )
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    rows = (
+        await db.execute(
+            query.order_by(Wallet.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        )
+    ).all()
+
+    items: list[WalletListItem] = []
+    for wallet, customer in rows:
+        available = await get_available_balance(db, wallet.id)
+        pending = await get_pending_balance(db, wallet.id)
+        items.append(
+            WalletListItem(
+                wallet_id=wallet.id,
+                wallet_number=wallet.wallet_number,
+                customer_id=customer.id,
+                customer_name=customer.full_name,
+                customer_email=customer.email,
+                available_balance=available,
+                pending_balance=pending,
+                currency=wallet.currency,
+                created_at=wallet.created_at,
+            )
+        )
+
+    return WalletListResponse(items=items, total=total)
+
+
+# ── Transactions ───────────────────────────────────────────────────────────────
+
+@router.get("/transactions", response_model=TransactionListResponse)
+async def list_transactions(
+    search: str | None = None,
+    tx_status: TransactionStatus | None = Query(None, alias="status"),
+    tx_type: TransactionType | None = Query(None, alias="type"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> TransactionListResponse:
+    query = select(Transaction, User).join(User, User.id == Transaction.customer_id)
+    if search:
+        pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                Transaction.transaction_number.ilike(pattern),
+                Transaction.reference.ilike(pattern),
+                User.full_name.ilike(pattern),
+                User.email.ilike(pattern),
+            )
+        )
+    if tx_status is not None:
+        query = query.where(Transaction.status == tx_status)
+    if tx_type is not None:
+        query = query.where(Transaction.type == tx_type)
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    rows = (
+        await db.execute(
+            query.order_by(Transaction.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        )
+    ).all()
+
+    return TransactionListResponse(
+        items=[
+            TransactionListItem(
+                id=tx.id,
+                transaction_number=tx.transaction_number,
+                customer_id=customer.id,
+                customer_name=customer.full_name,
+                type=tx.type,
+                amount=tx.amount,
+                fee=tx.fee,
+                status=tx.status,
+                method=tx.method,
+                reference=tx.reference,
+                description=tx.description,
+                created_at=tx.created_at,
+            )
+            for tx, customer in rows
+        ],
+        total=total,
+    )

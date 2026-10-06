@@ -1,5 +1,8 @@
+from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
+from app.models.enums import FundingMethod, KycStatus, TransactionStatus, TransactionType
 from app.schemas.common import CamelModel
 
 
@@ -28,3 +31,74 @@ class OperationsOverviewResponse(CamelModel):
     funding_volume_by_day: list[FundingVolumeByDay]
     funding_by_method: list[FundingByMethod]
     needs_attention: list[NeedsAttentionItem]
+
+
+# ── Customers ──────────────────────────────────────────────────────────────────
+
+class CustomerListItem(CamelModel):
+    id: UUID
+    full_name: str
+    email: str
+    mobile_number: str
+    kyc_status: KycStatus
+    is_active: bool
+    created_at: datetime
+
+
+class CustomerListResponse(CamelModel):
+    items: list[CustomerListItem]
+    total: int
+
+
+class CustomerDetailResponse(CamelModel):
+    id: UUID
+    full_name: str
+    email: str
+    mobile_number: str
+    kyc_status: KycStatus
+    is_active: bool
+    created_at: datetime
+    wallet_number: str | None
+    available_balance: Decimal | None
+    pending_balance: Decimal | None
+
+
+# ── Wallets ────────────────────────────────────────────────────────────────────
+
+class WalletListItem(CamelModel):
+    wallet_id: UUID
+    wallet_number: str
+    customer_id: UUID
+    customer_name: str
+    customer_email: str
+    available_balance: Decimal
+    pending_balance: Decimal
+    currency: str
+    created_at: datetime
+
+
+class WalletListResponse(CamelModel):
+    items: list[WalletListItem]
+    total: int
+
+
+# ── Transactions ───────────────────────────────────────────────────────────────
+
+class TransactionListItem(CamelModel):
+    id: UUID
+    transaction_number: str
+    customer_id: UUID
+    customer_name: str
+    type: TransactionType
+    amount: Decimal
+    fee: Decimal
+    status: TransactionStatus
+    method: FundingMethod | None
+    reference: str
+    description: str
+    created_at: datetime
+
+
+class TransactionListResponse(CamelModel):
+    items: list[TransactionListItem]
+    total: int
