@@ -10,7 +10,7 @@ Run with: python -m app.bootstrap
 import asyncio
 
 from app.core.database import AsyncSessionLocal, Base, engine
-from app.seed import seed_fee_rules_and_limits
+from app.seed import seed_config
 
 
 async def bootstrap() -> None:
@@ -18,9 +18,12 @@ async def bootstrap() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
-        await seed_fee_rules_and_limits(session)
-        await session.commit()
-        print("Bootstrap complete: fee rules and platform limits ensured.")
+        written = await seed_config(session)
+        if written:
+            await session.commit()
+            print("Bootstrap complete: fee rules and platform limits seeded.")
+        else:
+            print("Bootstrap complete: configuration already present.")
 
 
 if __name__ == "__main__":
