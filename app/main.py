@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import get_settings
 from app.core.rate_limiter import limiter
-from app.routers import admin, auth, funding, kyc, limits, operations, support, transactions, users, wallet
+from app.routers import admin, auth, card_to_bank, funding, requests_inbox, kyc, limits, operations, support, transactions, users, wallet
 
 settings = get_settings()
 
@@ -87,9 +87,12 @@ app.include_router(users.router, prefix=API_PREFIX)
 app.include_router(wallet.router, prefix=API_PREFIX)
 app.include_router(kyc.router, prefix=API_PREFIX)
 app.include_router(funding.router, prefix=API_PREFIX)
+app.include_router(card_to_bank.router, prefix=API_PREFIX)
+app.include_router(funding.public_router, prefix=API_PREFIX)
 app.include_router(transactions.router, prefix=API_PREFIX)
 app.include_router(support.router, prefix=API_PREFIX)
 app.include_router(limits.router, prefix=API_PREFIX)
+app.include_router(requests_inbox.router, prefix=API_PREFIX)
 app.include_router(operations.router, prefix=API_PREFIX)
 app.include_router(admin.router, prefix=API_PREFIX)
 

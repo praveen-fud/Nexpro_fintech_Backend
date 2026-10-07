@@ -2,7 +2,7 @@
 able to approve a funding request, regardless of what they send."""
 
 from app.models.enums import Role
-from tests.conftest import auth_headers, create_user, login
+from tests.conftest import bank_payload, auth_headers, create_user, login
 
 
 async def test_customer_cannot_approve_funding_request(client):
@@ -11,7 +11,7 @@ async def test_customer_cannot_approve_funding_request(client):
 
     create_res = await client.post(
         "/api/v1/funding-requests",
-        json={"method": "UPI", "amount": 5000, "paymentDetails": {"upiId": "c@upi"}},
+        json=bank_payload(5000),
         headers=auth_headers(customer_token),
     )
     funding_request_id = create_res.json()["id"]
@@ -42,7 +42,7 @@ async def test_operations_role_can_approve(client):
 
     create_res = await client.post(
         "/api/v1/funding-requests",
-        json={"method": "UPI", "amount": 5000, "paymentDetails": {"upiId": "c@upi"}},
+        json=bank_payload(5000),
         headers=auth_headers(customer_token),
     )
     funding_request_id = create_res.json()["id"]
@@ -58,3 +58,28 @@ async def test_operations_role_can_approve(client):
     )
     assert approve_res.status_code == 200
     assert approve_res.json()["status"] == "APPROVED"
+
+
+async def test_requests_inbox_shows_funding_and_kyc_to_staff_only(client):
+    from app.models.enums import KycStatus
+
+    await create_user(full_name="Ops", email="ops-inbox@test.local", mobile="9000000041", role=Role.OPERATIONS)
+    await create_user(full_name="Cust", email="cust-inbox@test.local", mobile="9000000042")
+    ops = await login(client, "ops-inbox@test.local")
+    cust = await login(client, "cust-inbox@test.local")
+    await create_user(
+        full_name="Pending Kyc", email="pk@test.local", mobile="9000000043", kyc_status=KycStatus.NOT_STARTED
+    )
+
+    res = await client.post("/api/v1/funding-requests", json=bank_payload(7000), headers=auth_headers(cust))
+    assert res.status_code == 201
+
+    inbox = await client.get("/api/v1/operations/requests", headers=auth_headers(ops))
+    assert inbox.status_code == 200, inbox.text
+    body = inbox.json()
+    assert body["summary"]["fundingAwaiting"] == 1
+    assert body["items"][0]["kind"] == "FUNDING" and body["items"][0]["needsAction"] is True
+    assert "No proof" in body["items"][0]["flags"] or body["items"][0]["detail"].startswith("UTR")
+
+    forbidden = await client.get("/api/v1/operations/requests", headers=auth_headers(cust))
+    assert forbidden.status_code == 403

@@ -23,6 +23,22 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:5173"]
 
+    # Company receiving accounts shown to customers on the Add Money pages.
+    # Real values MUST be set in production; development falls back to demo
+    # values (flagged `isDemo` to the UI) so the flow can be tried locally.
+    payee_upi_id: str = ""
+    payee_upi_name: str = ""
+    payee_bank_account_name: str = ""
+    payee_bank_name: str = ""
+    payee_bank_account_number: str = ""
+    payee_bank_ifsc: str = ""
+
+    # Razorpay (card payments). Leave blank to disable cards. Use rzp_test_*
+    # keys outside production. The secret and webhook secret never leave the server.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    razorpay_webhook_secret: str = ""
+
     upload_dir: str = "./uploads"
     max_upload_mb: int = 5
 

@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -69,6 +70,8 @@ def _request_to_response(fr: FundingRequest, customer_name: str) -> FundingReque
         status=fr.status,
         payment_status=fr.payment_status,
         reference=fr.reference,
+        utr=fr.utr,
+        has_proof=bool(fr.proof_file_path),
         assigned_to=None,
         created_at=fr.created_at,
         updated_at=fr.updated_at,
@@ -248,6 +251,25 @@ def _check_idempotency_key(idempotency_key: str | None) -> None:
         )
 
 
+@router.get("/funding-requests/{funding_request_id}/proof")
+async def get_funding_proof(
+    funding_request_id: uuid.UUID,
+    user: User = Depends(require_roles(*OPERATIONS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    fr = (
+        await db.execute(select(FundingRequest).where(FundingRequest.id == funding_request_id))
+    ).scalar_one_or_none()
+    if fr is None or not fr.proof_file_path or not Path(fr.proof_file_path).is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No payment proof on file.")
+    # Inline + no-store: shown in the in-page viewer, never cached or saved by default.
+    return FileResponse(
+        fr.proof_file_path,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
 @router.post("/funding-requests/{funding_request_id}/approve", response_model=FundingRequestResponse)
 async def approve_request(
     funding_request_id: uuid.UUID,
@@ -313,6 +335,7 @@ def _kyc_to_response(profile: KycProfile) -> KycProfileResponse:
         bank_account = KycBankAccountResponse(
             account_holder_name=profile.account_holder_name or "",
             account_number_masked=profile.account_number_masked,
+            bank_name=profile.bank_name or "",
             ifsc=profile.ifsc or "",
         )
 

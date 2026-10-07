@@ -29,6 +29,7 @@ class KycProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     account_holder_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     account_number_masked: Mapped[str | None] = mapped_column(String(20), nullable=True)
     ifsc: Mapped[str | None] = mapped_column(String(11), nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     review_notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     reviewed_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True)

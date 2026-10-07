@@ -47,14 +47,24 @@ def build_verification_checklist(
     risk_detail = "Large amount — review carefully" if risk_result == "warning" else "Within normal range"
     items.append(ChecklistItem(key="risk", label="Risk Check", result=risk_result, detail=risk_detail))
 
-    if funding_request.method == FundingMethod.BANK_TRANSFER:
+    if funding_request.utr:
+        items.append(
+            ChecklistItem(
+                key="utr",
+                label="Transaction ID (UTR) Provided",
+                result="pass",
+                detail=f"{funding_request.utr} — match it against the bank statement",
+            )
+        )
+
+    if funding_request.method in (FundingMethod.BANK_TRANSFER, FundingMethod.UPI):
         has_proof = bool(funding_request.proof_file_path)
         items.append(
             ChecklistItem(
                 key="documents",
                 label="Supporting Documents",
-                result="pass" if has_proof else "warning",
-                detail="Proof of transfer attached" if has_proof else "No proof uploaded",
+                result="pass" if has_proof else ("fail" if funding_request.method == FundingMethod.UPI else "warning"),
+                detail="Payment proof attached" if has_proof else "No proof uploaded",
             )
         )
 

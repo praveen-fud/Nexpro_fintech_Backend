@@ -24,6 +24,11 @@ async def _fresh_database():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+    # Each test logs in several times; start every test with a clean rate-limit
+    # window so the production limit (10 logins/min) doesn't trip the suite.
+    from app.core.rate_limiter import limiter
+
+    limiter.reset()
     yield
     await engine.dispose()
     db_file = Path("test.db")
@@ -65,3 +70,14 @@ async def login(client: AsyncClient, identifier: str) -> str:
 
 def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def bank_payload(amount: int = 5000) -> dict:
+    """A valid bank-transfer funding body with a unique UTR (UTRs are unique)."""
+    import uuid
+
+    return {
+        "method": "BANK_TRANSFER",
+        "amount": amount,
+        "paymentDetails": {"referenceNumber": uuid.uuid4().hex[:16].upper()},
+    }

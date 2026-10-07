@@ -19,6 +19,7 @@ class BankAccountInfo(CamelModel):
     account_holder_name: str
     account_number: str
     confirm_account_number: str
+    bank_name: str = Field(min_length=2, max_length=100)
     ifsc: str
 
 
@@ -33,6 +34,7 @@ class KycDocumentResponse(CamelModel):
 class KycBankAccountResponse(CamelModel):
     account_holder_name: str
     account_number_masked: str
+    bank_name: str = ""
     ifsc: str
 
 

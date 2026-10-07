@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import (
@@ -36,7 +37,9 @@ _SAFE_PAYMENT_DETAIL_KEYS = frozenset({
     "upiId",            # e.g. "user@upi"
     "referenceNumber",  # bank-transfer / UPI reference
     "bankName",
+    "transferDate",
     "transactionDate",
+    "gatewayOrderId",   # Razorpay order id
     "proofFileName",    # display name only — actual path is in proof_file_path column
 })
 
@@ -64,10 +67,23 @@ async def create_funding_request(
     amount: Decimal,
     payment_details: dict[str, Any],
     proof_file_path: str | None = None,
+    utr: str | None = None,
 ) -> FundingRequest:
     fee = await fee_service.calculate_fee(db, method, amount)
     wallet_credit = amount  # Fee is additive — the full requested amount is credited.
-    reference = payment_details.get("reference") or numbering_service.new_customer_reference(customer.mobile_number)
+    # Server-generated — a client-supplied reference could collide with or
+    # impersonate another customer's payment note.
+    reference = numbering_service.new_customer_reference(customer.mobile_number)
+
+    if utr is not None:
+        duplicate = (
+            await db.execute(select(FundingRequest.id).where(FundingRequest.utr == utr))
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This transaction ID has already been submitted. Check it or contact support.",
+            )
 
     funding_request = FundingRequest(
         request_number=numbering_service.new_request_number(),
@@ -80,6 +96,7 @@ async def create_funding_request(
         payment_status=PaymentStatus.PENDING,
         reference=reference,
         proof_file_path=proof_file_path,
+        utr=utr,
     )
     db.add(funding_request)
     await db.flush()
@@ -110,7 +127,7 @@ async def create_funding_request(
     )
 
     masked_reference = (
-        payment_details.get("maskedCard") or payment_details.get("upiId") or payment_details.get("referenceNumber")
+        payment_details.get("maskedCard") or payment_details.get("upiId") or utr or payment_details.get("referenceNumber")
     )
     db.add(
         PaymentAttempt(
@@ -124,7 +141,14 @@ async def create_funding_request(
         )
     )
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:  # concurrent submit of the same UTR
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This transaction ID has already been submitted. Check it or contact support.",
+        ) from exc
     await db.refresh(funding_request)
     return funding_request
 
@@ -228,5 +252,98 @@ async def request_additional_information(
     )
 
     await db.commit()
+    await db.refresh(funding_request)
+    return funding_request
+
+
+async def capture_card_payment(
+    db: AsyncSession,
+    *,
+    customer: User,
+    amount: Decimal,
+    order_id: str,
+    payment_id: str,
+) -> FundingRequest:
+    """Records a card payment the gateway has CONFIRMED captured, and credits
+    the wallet immediately — there is nothing for Operations to verify by hand.
+
+    Idempotent on the gateway payment id (stored in the unique `utr` column), so
+    the browser callback and the webhook can both call this safely: whichever
+    arrives second just gets the existing request back, never a second credit."""
+    existing = (await db.execute(select(FundingRequest).where(FundingRequest.utr == payment_id))).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    method = FundingMethod.CREDIT_CARD
+    fee = await fee_service.calculate_fee(db, method, amount)
+    reference = numbering_service.new_customer_reference(customer.mobile_number)
+
+    funding_request = FundingRequest(
+        request_number=numbering_service.new_request_number(),
+        customer_id=customer.id,
+        method=method,
+        requested_amount=amount,
+        fee=fee,
+        wallet_credit=amount,
+        status=FundingStatus.APPROVED,
+        payment_status=PaymentStatus.CAPTURED,
+        reference=reference,
+        utr=payment_id,
+    )
+    db.add(funding_request)
+    await db.flush()
+
+    transaction = Transaction(
+        transaction_number=numbering_service.new_transaction_number(),
+        customer_id=customer.id,
+        funding_request_id=funding_request.id,
+        type=TransactionType.FUNDING,
+        amount=amount,
+        fee=fee,
+        status=TransactionStatus.COMPLETED,
+        method=method,
+        reference=reference,
+        description=f"Wallet Funding via {METHOD_LABELS[method]}",
+    )
+    db.add(transaction)
+    await db.flush()
+
+    wallet = await wallet_service.get_or_create_wallet(db, customer.id)
+    await wallet_service.post_pending_credit(
+        db,
+        wallet_id=wallet.id,
+        amount=amount,
+        entry_type="FUNDING_CREDIT",
+        reference=reference,
+        transaction_id=transaction.id,
+    )
+    await wallet_service.post_entry_for_transaction(db, transaction.id)
+
+    db.add(
+        PaymentAttempt(
+            funding_request_id=funding_request.id,
+            provider="RAZORPAY",
+            status=PaymentStatus.CAPTURED,
+            masked_reference=payment_id,
+            details=_sanitize_payment_details({"gatewayOrderId": order_id}),
+        )
+    )
+    await audit_service.record_audit_event(
+        db,
+        actor=customer,
+        action="CARD_PAYMENT_CAPTURED",
+        resource_type="FundingRequest",
+        resource_id=funding_request.id,
+        after_state={"walletCredit": str(amount), "gatewayPaymentId": payment_id},
+    )
+
+    try:
+        await db.commit()
+    except IntegrityError:  # lost a race with the other confirmation path
+        await db.rollback()
+        existing = (
+            await db.execute(select(FundingRequest).where(FundingRequest.utr == payment_id))
+        ).scalar_one()
+        return existing
     await db.refresh(funding_request)
     return funding_request

@@ -32,6 +32,9 @@ class FundingRequest(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     reviewed_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True)
     review_notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     proof_file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Bank/UPI transaction id (UTR) the customer paid with. Unique so one real
+    # payment can never be claimed — and credited — twice.
+    utr: Mapped[str | None] = mapped_column(String(32), unique=True, index=True, nullable=True)
 
     customer: Mapped["User"] = relationship(foreign_keys=[customer_id])
     payment_attempts: Mapped[list["PaymentAttempt"]] = relationship(back_populates="funding_request")

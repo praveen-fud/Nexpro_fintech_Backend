@@ -8,7 +8,7 @@
 """
 
 from app.models.enums import KycStatus, Role
-from tests.conftest import auth_headers, create_user, login
+from tests.conftest import bank_payload, auth_headers, create_user, login
 
 
 async def _submit_kyc(client, customer_token: str) -> str:
@@ -47,7 +47,7 @@ async def test_funding_blocked_until_kyc_approved(client):
 
     blocked = await client.post(
         "/api/v1/funding-requests",
-        json={"method": "UPI", "amount": 5000, "paymentDetails": {"upiId": "c@upi"}},
+        json=bank_payload(5000),
         headers=auth_headers(customer_token),
     )
     assert blocked.status_code == 403
@@ -63,7 +63,7 @@ async def test_funding_blocked_until_kyc_approved(client):
 
     allowed = await client.post(
         "/api/v1/funding-requests",
-        json={"method": "UPI", "amount": 5000, "paymentDetails": {"upiId": "c@upi"}},
+        json=bank_payload(5000),
         headers=auth_headers(customer_token),
     )
     assert allowed.status_code == 201, allowed.text
@@ -147,7 +147,7 @@ async def test_rejected_kyc_can_be_resubmitted_for_review(client):
 
     still_blocked = await client.post(
         "/api/v1/funding-requests",
-        json={"method": "UPI", "amount": 5000, "paymentDetails": {"upiId": "c@upi"}},
+        json=bank_payload(5000),
         headers=auth_headers(customer_token),
     )
     assert still_blocked.status_code == 403

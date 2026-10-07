@@ -38,6 +38,7 @@ def _to_response(profile: KycProfile) -> KycProfileResponse:
         bank_account = KycBankAccountResponse(
             account_holder_name=profile.account_holder_name or "",
             account_number_masked=profile.account_number_masked,
+            bank_name=profile.bank_name or "",
             ifsc=profile.ifsc or "",
         )
 

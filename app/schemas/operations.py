@@ -102,3 +102,32 @@ class TransactionListItem(CamelModel):
 class TransactionListResponse(CamelModel):
     items: list[TransactionListItem]
     total: int
+
+
+class InboxItem(CamelModel):
+    kind: str  # FUNDING | KYC
+    id: UUID
+    reference: str
+    customer_id: UUID
+    customer_name: str
+    customer_email: str
+    title: str
+    detail: str
+    amount: Decimal | None = None
+    status: str
+    needs_action: bool
+    submitted_at: datetime
+    waiting_minutes: int
+    flags: list[str] = []
+
+
+class InboxSummary(CamelModel):
+    awaiting_action: int
+    funding_awaiting: int
+    kyc_awaiting: int
+    oldest_waiting_minutes: int
+
+
+class InboxResponse(CamelModel):
+    summary: InboxSummary
+    items: list[InboxItem]

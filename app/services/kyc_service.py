@@ -76,6 +76,7 @@ async def submit_kyc(
     account_number = bank_account.get("accountNumber", "")
     profile.account_number_masked = _mask_account_number(account_number) if account_number else None
     profile.ifsc = bank_account.get("ifsc")
+    profile.bank_name = (bank_account.get("bankName") or "").strip()[:100] or None
 
     # Resubmission after REJECTED/ADDITIONAL_INFORMATION_REQUIRED: drop the
     # prior document rows so the profile doesn't accumulate duplicates of

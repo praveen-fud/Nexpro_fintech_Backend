@@ -1,7 +1,7 @@
 """CRITICAL TEST: a customer must never be able to read another customer's
 wallet or funding requests."""
 
-from tests.conftest import auth_headers, create_user, login
+from tests.conftest import bank_payload, auth_headers, create_user, login
 
 
 async def test_customer_cannot_access_another_customers_funding_request(client):
@@ -13,7 +13,7 @@ async def test_customer_cannot_access_another_customers_funding_request(client):
 
     create_res = await client.post(
         "/api/v1/funding-requests",
-        json={"method": "UPI", "amount": 5000, "paymentDetails": {"upiId": "alice@upi"}},
+        json=bank_payload(5000),
         headers=auth_headers(alice_token),
     )
     assert create_res.status_code == 201, create_res.text

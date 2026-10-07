@@ -6,13 +6,13 @@
 from decimal import Decimal
 
 from app.models.enums import Role
-from tests.conftest import auth_headers, create_user, login
+from tests.conftest import bank_payload, auth_headers, create_user, login
 
 
 async def _create_funding_request(client, customer_token: str, amount: int = 5000) -> str:
     res = await client.post(
         "/api/v1/funding-requests",
-        json={"method": "UPI", "amount": amount, "paymentDetails": {"upiId": "c@upi"}},
+        json=bank_payload(amount),
         headers=auth_headers(customer_token),
     )
     assert res.status_code == 201, res.text
@@ -90,3 +90,71 @@ async def test_rejected_funding_request_does_not_credit_wallet(client):
         headers={**auth_headers(ops_token), "Idempotency-Key": "post-reject-approve"},
     )
     assert approve_after_reject.status_code == 409
+
+
+async def _approved_customer(client):
+    await create_user(full_name="Utr Customer", email="utr-cust@test.local", mobile="9000000077")
+    return await login(client, "utr-cust@test.local")
+
+
+async def test_same_utr_cannot_be_submitted_twice(client):
+    token = await _approved_customer(client)
+    body = bank_payload(1000)
+    first = await client.post("/api/v1/funding-requests", json=body, headers=auth_headers(token))
+    assert first.status_code == 201, first.text
+    second = await client.post("/api/v1/funding-requests", json=body, headers=auth_headers(token))
+    assert second.status_code == 409
+
+
+async def test_utr_is_required_and_validated(client):
+    token = await _approved_customer(client)
+    for details in ({}, {"referenceNumber": "12"}, {"referenceNumber": "abc def 12345"}):
+        res = await client.post(
+            "/api/v1/funding-requests",
+            json={"method": "BANK_TRANSFER", "amount": 1000, "paymentDetails": details},
+            headers=auth_headers(token),
+        )
+        assert res.status_code == 400, details
+
+
+async def test_upi_requires_payment_screenshot(client):
+    token = await _approved_customer(client)
+    res = await client.post(
+        "/api/v1/funding-requests",
+        json={"method": "UPI", "amount": 1000, "paymentDetails": {"referenceNumber": "123456789012"}},
+        headers=auth_headers(token),
+    )
+    assert res.status_code == 400
+
+
+async def test_upi_payment_link_is_signed_and_expiring(client):
+    token = await _approved_customer(client)
+    ref = "NXP-00077-AB12"  # mobile 9000000077 -> last 5 = 00077
+    res = await client.post(
+        "/api/v1/funding-requests/upi/payment-link",
+        json={"amount": 2500, "reference": ref},
+        headers=auth_headers(token),
+    )
+    assert res.status_code == 200, res.text
+    link = res.json()["token"]
+
+    # Public (no auth) and exposes only payee + amount + note.
+    pub = await client.get(f"/api/v1/public/upi-payment/{link}")
+    assert pub.status_code == 200
+    body = pub.json()
+    assert Decimal(str(body["amount"])) == Decimal("2500") and body["reference"] == ref
+    assert "customer" not in str(body).lower() and "email" not in body
+
+    # Tampered token and a login access token are both rejected.
+    assert (await client.get(f"/api/v1/public/upi-payment/{link[:-3]}abc")).status_code == 404
+    assert (await client.get(f"/api/v1/public/upi-payment/{token}")).status_code == 404
+
+
+async def test_payment_link_rejects_someone_elses_reference(client):
+    token = await _approved_customer(client)
+    res = await client.post(
+        "/api/v1/funding-requests/upi/payment-link",
+        json={"amount": 2500, "reference": "NXP-99999-AB12"},
+        headers=auth_headers(token),
+    )
+    assert res.status_code == 400
