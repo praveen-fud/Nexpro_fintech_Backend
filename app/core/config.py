@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "Nexpro Fintech API"
+    app_name: str = "Nexpro Paytech API"
     environment: str = "development"
 
     # Defaults to a local SQLite file so the app runs with zero external

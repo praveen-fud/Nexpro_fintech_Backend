@@ -96,7 +96,7 @@ def _payee_or_503(value: str, demo: str, label: str) -> tuple[str, bool]:
 @router.get("/upi/payee", response_model=UpiPayeeResponse)
 async def get_upi_payee(user: User = Depends(require_roles(Role.CUSTOMER))) -> UpiPayeeResponse:
     upi_id, demo = _payee_or_503(settings.payee_upi_id, "nexpro@demobank", "UPI payee")
-    name, _ = _payee_or_503(settings.payee_upi_name, "Nexpro Fintech Pvt Ltd", "UPI payee name")
+    name, _ = _payee_or_503(settings.payee_upi_name, "Nexpro Paytech Pvt Ltd", "UPI payee name")
     return UpiPayeeResponse(
         upi_id=upi_id,
         payee_name=name,
@@ -147,7 +147,7 @@ async def open_upi_payment_link(request: Request, token: str) -> PublicUpiPaymen
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This payment link is not valid.") from exc
 
     upi_id, demo = _payee_or_503(settings.payee_upi_id, "nexpro@demobank", "UPI payee")
-    name, _ = _payee_or_503(settings.payee_upi_name, "Nexpro Fintech Pvt Ltd", "UPI payee name")
+    name, _ = _payee_or_503(settings.payee_upi_name, "Nexpro Paytech Pvt Ltd", "UPI payee name")
     return PublicUpiPaymentResponse(
         upi_id=upi_id,
         payee_name=name,
@@ -164,7 +164,7 @@ async def get_beneficiary(
 ) -> BeneficiaryInfoResponse:
     number, demo = _payee_or_503(settings.payee_bank_account_number, "000000000000", "Bank account")
     ifsc, _ = _payee_or_503(settings.payee_bank_ifsc, "DEMO0000001", "Bank IFSC")
-    name, _ = _payee_or_503(settings.payee_bank_account_name, "Nexpro Fintech Pvt Ltd", "Bank account name")
+    name, _ = _payee_or_503(settings.payee_bank_account_name, "Nexpro Paytech Pvt Ltd", "Bank account name")
     bank, _ = _payee_or_503(settings.payee_bank_name, "Demo Bank", "Bank name")
     return BeneficiaryInfoResponse(
         account_name=name,

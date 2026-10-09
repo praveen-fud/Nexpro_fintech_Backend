@@ -1,6 +1,6 @@
-# Nexpro Fintech — Backend
+# Nexpro Paytech — Backend
 
-FastAPI backend for **Nexpro Fintech**, a wallet funding platform (Credit Card / UPI / Bank Transfer → Operations review → ledger-backed wallet credit).
+FastAPI backend for **Nexpro Paytech**, a wallet funding platform (Credit Card / UPI / Bank Transfer → Operations review → ledger-backed wallet credit).
 
 This is the backend only. It serves `/api/v1` to a separate frontend (see the frontend repo / `Frontend/` in the monorepo this was split from). Implements Stage 1 + the core of Stage 2 of the product spec: real auth, a real database, and an append-only wallet ledger — never a mutable balance column.
 
