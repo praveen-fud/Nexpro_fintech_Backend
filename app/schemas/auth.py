@@ -35,7 +35,6 @@ class VerifyOtpRequest(CamelModel):
 class LoginRequest(CamelModel):
     identifier: str = Field(min_length=3)
     password: str
-    remember_me: bool = False
 
 
 class LoginResponse(CamelModel):

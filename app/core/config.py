@@ -18,7 +18,14 @@ class Settings(BaseSettings):
     jwt_secret: str = "insecure-dev-secret-change-me-before-production-use"
     jwt_algorithm: str = "HS256"
     access_token_ttl_minutes: int = 15
-    refresh_token_ttl_days: int = 30
+    # Session policy (money app): a session ends after this much user
+    # inactivity, and can never outlive the absolute cap even if the user is
+    # continuously active. The browser enforces the idle limit to the second;
+    # the server enforces it too (plus a small grace for heartbeat latency)
+    # so an abandoned or tampered client cannot keep a session alive.
+    idle_timeout_minutes: int = 15
+    idle_grace_seconds: int = 30
+    session_max_hours: int = 12
     refresh_cookie_name: str = "nexpro_refresh_token"
 
     cors_origins: list[str] = ["http://localhost:5173"]

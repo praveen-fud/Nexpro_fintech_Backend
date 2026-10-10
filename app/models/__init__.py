@@ -11,7 +11,7 @@ from app.models.funding import FundingRequest, IdempotencyRecord, PaymentAttempt
 from app.models.kyc import KycDocument, KycProfile
 from app.models.support import SupportTicket
 from app.models.transaction import Transaction
-from app.models.user import RefreshToken, User
+from app.models.user import AuthSession, RefreshToken, User
 from app.models.wallet import Wallet, WalletLedgerEntry
 
 __all__ = [
@@ -25,6 +25,7 @@ __all__ = [
     "KycProfile",
     "SupportTicket",
     "Transaction",
+    "AuthSession",
     "RefreshToken",
     "User",
     "Wallet",

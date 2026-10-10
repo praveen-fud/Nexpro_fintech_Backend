@@ -11,11 +11,12 @@ from app.core.config import get_settings
 settings = get_settings()
 
 
-def create_access_token(user_id: uuid.UUID, role: str) -> str:
+def create_access_token(user_id: uuid.UUID, role: str, session_id: uuid.UUID) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "role": role,
+        "sid": str(session_id),
         "iat": now,
         "exp": now + timedelta(minutes=settings.access_token_ttl_minutes),
         "type": "access",
@@ -42,5 +43,6 @@ def hash_refresh_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
-def refresh_token_expiry() -> datetime:
-    return datetime.now(UTC) + timedelta(days=settings.refresh_token_ttl_days)
+def refresh_token_expiry(session_started_at: datetime) -> datetime:
+    # A refresh token can never outlive the session's absolute cap.
+    return session_started_at + timedelta(hours=settings.session_max_hours)

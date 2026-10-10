@@ -32,12 +32,28 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     wallet: Mapped["Wallet | None"] = relationship(back_populates="user", uselist=False)
 
 
+class AuthSession(UUIDPrimaryKeyMixin, Base):
+    """One login session. Access tokens carry its id (`sid`); the server
+    rejects them once the session is idle too long, expired, or revoked.
+    Refresh-token rotation keeps the same session."""
+
+    __tablename__ = "auth_sessions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RefreshToken(UUIDPrimaryKeyMixin, Base):
     """Rotating refresh tokens. We store a hash, never the raw token."""
 
     __tablename__ = "refresh_tokens"
 
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("auth_sessions.id"), index=True, nullable=True
+    )
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

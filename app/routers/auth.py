@@ -9,10 +9,12 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.rate_limiter import limiter
 from app.models.enums import Role
-from app.models.user import RefreshToken, User
+from app.models.user import AuthSession, RefreshToken, User
 from app.schemas.auth import LoginRequest, LoginResponse, RefreshResponse, SignUpRequest, VerifyOtpRequest
 from app.schemas.user import UserResponse
+from app.security.deps import get_current_user
 from app.security.passwords import hash_password, verify_password
+from app.security.sessions import session_is_live
 from app.security.tokens import (
     create_access_token,
     generate_refresh_token,
@@ -36,23 +38,34 @@ def _set_refresh_cookie(response: Response, raw_token: str) -> None:
         httponly=True,
         secure=is_prod,
         samesite="none" if is_prod else "lax",
-        max_age=settings.refresh_token_ttl_days * 24 * 60 * 60,
+        max_age=settings.session_max_hours * 60 * 60,
         path="/api/v1/auth",
     )
 
 
-async def _issue_session(db: AsyncSession, response: Response, user: User) -> str:
+async def _issue_tokens(db: AsyncSession, response: Response, user: User, auth_session: AuthSession) -> str:
+    """Mint a rotated refresh token (cookie) + a fresh access token, both
+    bound to `auth_session`."""
     raw_refresh = generate_refresh_token()
     db.add(
         RefreshToken(
             user_id=user.id,
+            session_id=auth_session.id,
             token_hash=hash_refresh_token(raw_refresh),
-            expires_at=refresh_token_expiry(),
+            expires_at=refresh_token_expiry(auth_session.started_at),
         )
     )
     await db.commit()
     _set_refresh_cookie(response, raw_refresh)
-    return create_access_token(user.id, user.role.value)
+    return create_access_token(user.id, user.role.value, auth_session.id)
+
+
+async def _start_session(db: AsyncSession, response: Response, user: User) -> str:
+    now = datetime.now(UTC)
+    auth_session = AuthSession(user_id=user.id, started_at=now, last_active_at=now)
+    db.add(auth_session)
+    await db.flush()
+    return await _issue_tokens(db, response, user, auth_session)
 
 
 @router.post("/sign-up", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -102,7 +115,7 @@ async def login(request: Request, body: LoginRequest, response: Response, db: As
     if not user.email_verified:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Please verify your email before signing in.")
 
-    access_token = await _issue_session(db, response, user)
+    access_token = await _start_session(db, response, user)
     return {"accessToken": access_token, "user": user}
 
 
@@ -129,9 +142,40 @@ async def refresh(request: Request, response: Response, db: AsyncSession = Depen
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired. Please sign in again.")
 
+    # Legacy tokens (issued before sessions existed) have no session: force a
+    # fresh login. Idle/absolute expiry is judged on the session, not the token.
+    auth_session = (
+        await db.execute(select(AuthSession).where(AuthSession.id == stored.session_id))
+    ).scalar_one_or_none()
+    if auth_session is None or not session_is_live(auth_session, now):
+        if auth_session is not None and auth_session.revoked_at is None:
+            auth_session.revoked_at = now
+        stored.revoked_at = now
+        await db.commit()
+        response.delete_cookie(settings.refresh_cookie_name, path="/api/v1/auth")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your session expired due to inactivity. Please sign in again.",
+        )
+
+    # Refreshing is NOT user activity (a background poll can trigger it): it
+    # never extends last_active_at; only /auth/heartbeat does.
     stored.revoked_at = now
-    access_token = await _issue_session(db, response, user)
+    access_token = await _issue_tokens(db, response, user, auth_session)
     return {"accessToken": access_token}
+
+
+@router.post("/heartbeat", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("30/minute")
+async def heartbeat(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Called by the browser only when the user actually interacts (mouse,
+    keyboard, touch). This is the sole thing that extends the idle window."""
+    request.state.auth_session.last_active_at = datetime.now(UTC)
+    await db.commit()
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -143,6 +187,13 @@ async def logout(request: Request, response: Response, db: AsyncSession = Depend
             await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
         ).scalar_one_or_none()
         if stored is not None:
-            stored.revoked_at = datetime.now(UTC)
+            now = datetime.now(UTC)
+            stored.revoked_at = now
+            if stored.session_id is not None:
+                auth_session = (
+                    await db.execute(select(AuthSession).where(AuthSession.id == stored.session_id))
+                ).scalar_one_or_none()
+                if auth_session is not None and auth_session.revoked_at is None:
+                    auth_session.revoked_at = now
             await db.commit()
     response.delete_cookie(settings.refresh_cookie_name, path="/api/v1/auth")
