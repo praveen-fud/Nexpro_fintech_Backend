@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import Field
 
 from app.models.enums import FundingMethod, FundingStatus, PaymentStatus
-from app.schemas.common import CamelModel
+from app.schemas.common import CamelModel, MoneyAmount
 
 
 class FundingQuoteResponse(CamelModel):
@@ -18,7 +18,7 @@ class FundingQuoteResponse(CamelModel):
 
 class CreateFundingRequestBody(CamelModel):
     method: FundingMethod
-    amount: Decimal = Field(gt=0)
+    amount: MoneyAmount = Field(gt=0, decimal_places=2)
     payment_details: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -51,7 +51,7 @@ class BeneficiaryInfoResponse(CamelModel):
 
 
 class CardOrderBody(CamelModel):
-    amount: Decimal = Field(gt=0)
+    amount: MoneyAmount = Field(gt=0, decimal_places=2)
 
 
 class CardOrderResponse(CamelModel):
@@ -70,7 +70,7 @@ class CardVerifyBody(CamelModel):
 
 
 class UpiPaymentLinkBody(CamelModel):
-    amount: Decimal = Field(gt=0)
+    amount: MoneyAmount = Field(gt=0, decimal_places=2)
     reference: str = Field(pattern=r"^NXP-\d{5}-[0-9A-F]{4}$")
 
 

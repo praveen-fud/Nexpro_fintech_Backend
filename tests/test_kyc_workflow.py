@@ -7,8 +7,9 @@
   fresh second approval must both be rejected).
 """
 
+
 from app.models.enums import KycStatus, Role
-from tests.conftest import bank_payload, auth_headers, create_user, login
+from tests.conftest import PNG_1PX, bank_payload, auth_headers, create_user, login
 
 
 async def _submit_kyc(client, customer_token: str) -> str:
@@ -19,12 +20,14 @@ async def _submit_kyc(client, customer_token: str) -> str:
         "/api/v1/kyc/submit",
         data={
             "personalInfo": '{"dateOfBirth":"1995-01-01","address":"1 Main St","city":"Pune","state":"MH","pinCode":"411001"}',
-            "bankAccount": '{"accountHolderName":"Test User","accountNumber":"123456789012","confirmAccountNumber":"123456789012","ifsc":"HDFC0000001"}',
+            "bankAccount": '{"accountHolderName":"Test User","accountNumber":"123456789012",'
+                '"confirmAccountNumber":"123456789012","bankName":"HDFC Bank",'
+                '"ifsc":"HDFC0000001"}',
         },
         files={
-            "idProof": ("id.png", b"fake-image-bytes", "image/png"),
-            "addressProof": ("address.png", b"fake-image-bytes", "image/png"),
-            "panCard": ("pan.png", b"fake-image-bytes", "image/png"),
+            "idProof": ("id.png", PNG_1PX, "image/png"),
+            "addressProof": ("address.png", PNG_1PX, "image/png"),
+            "panCard": ("pan.png", PNG_1PX, "image/png"),
         },
         headers=auth_headers(customer_token),
     )

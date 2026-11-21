@@ -19,6 +19,7 @@ from app.models.funding import FundingRequest, PaymentAttempt
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.services import audit_service, fee_service, numbering_service, wallet_service
+from app.services.payment_details import sanitize_payment_details
 
 METHOD_LABELS = {
     FundingMethod.CREDIT_CARD: "Credit Card",
@@ -26,28 +27,12 @@ METHOD_LABELS = {
     FundingMethod.BANK_TRANSFER: "Bank Transfer",
 }
 
-# Only these keys are safe to persist in the payment_details JSON column.
-# This is an explicit allowlist — anything the frontend sends that is NOT
-# in this set is silently dropped before the row is written.  Raw card
-# numbers, CVV, full UPI credentials, and any other sensitive values must
-# never reach the database.
-_SAFE_PAYMENT_DETAIL_KEYS = frozenset({
-    "maskedCard",       # e.g. "•••• 4821"
-    "cardNetwork",      # e.g. "Visa"
-    "upiId",            # e.g. "user@upi"
-    "referenceNumber",  # bank-transfer / UPI reference
-    "bankName",
-    "transferDate",
-    "transactionDate",
-    "gatewayOrderId",   # Razorpay order id
-    "proofFileName",    # display name only — actual path is in proof_file_path column
-})
-
-
-def _sanitize_payment_details(raw: dict[str, Any]) -> dict[str, Any]:
-    """Strip every key that is not explicitly allowed.  A leaked card number
-    or CVV in the details column would be a serious PCI violation."""
-    return {k: v for k, v in raw.items() if k in _SAFE_PAYMENT_DETAIL_KEYS}
+# Persisting the payment_details blob goes through services.payment_details,
+# which allowlists the keys, bounds their length, strips control characters
+# and redacts anything that passes a Luhn check as a card number. The old
+# allowlist-only version kept values verbatim, so a PAN sent inside an
+# allowed free-text field (or an unmasked "maskedCard") was stored as-is.
+_sanitize_payment_details = sanitize_payment_details
 
 
 def _ensure_transition(current: FundingStatus, target: FundingStatus) -> None:

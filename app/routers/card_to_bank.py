@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.models.enums import KycStatus, Role
 from app.models.user import User
+from app.schemas.common import MoneyAmount
 from app.schemas.card_to_bank import CardToBankQuoteResponse, CardToBankRateCardResponse
 from app.security.deps import require_roles
 from app.services import card_to_bank_service as pricing
@@ -34,7 +35,7 @@ async def rate_card(user: User = Depends(require_roles(Role.CUSTOMER))) -> CardT
 
 
 @router.get("/quote", response_model=CardToBankQuoteResponse)
-async def quote(amount: Decimal, user: User = Depends(require_roles(Role.CUSTOMER))) -> CardToBankQuoteResponse:
+async def quote(amount: MoneyAmount, user: User = Depends(require_roles(Role.CUSTOMER))) -> CardToBankQuoteResponse:
     _require_approved(user)
     if amount < pricing.MIN_AMOUNT or amount > pricing.MAX_AMOUNT:
         raise HTTPException(

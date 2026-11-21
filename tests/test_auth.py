@@ -5,6 +5,8 @@ endpoint and login's email_verified check are left in place (dormant) for
 when real verification is reinstated.
 """
 
+from tests.conftest import TEST_PASSWORD
+
 
 async def test_login_succeeds_immediately_after_sign_up(client):
     sign_up_res = await client.post(
@@ -13,8 +15,8 @@ async def test_login_succeeds_immediately_after_sign_up(client):
             "fullName": "New Customer",
             "email": "newcustomer@nexprotest.com",
             "mobileNumber": "9000000099",
-            "password": "Password123",
-            "confirmPassword": "Password123",
+            "password": TEST_PASSWORD,
+            "confirmPassword": TEST_PASSWORD,
             "acceptedTerms": True,
         },
     )
@@ -22,7 +24,7 @@ async def test_login_succeeds_immediately_after_sign_up(client):
     assert sign_up_res.json()["kycStatus"] == "NOT_STARTED"
 
     login_res = await client.post(
-        "/api/v1/auth/login", json={"identifier": "newcustomer@nexprotest.com", "password": "Password123"}
+        "/api/v1/auth/login", json={"identifier": "newcustomer@nexprotest.com", "password": TEST_PASSWORD}
     )
     assert login_res.status_code == 200, login_res.text
 
@@ -39,13 +41,13 @@ async def test_refresh_token_rotates_successfully(client):
             "fullName": "Refresh Test",
             "email": "refreshtest@nexprotest.com",
             "mobileNumber": "9000000098",
-            "password": "Password123",
-            "confirmPassword": "Password123",
+            "password": TEST_PASSWORD,
+            "confirmPassword": TEST_PASSWORD,
             "acceptedTerms": True,
         },
     )
     login_res = await client.post(
-        "/api/v1/auth/login", json={"identifier": "refreshtest@nexprotest.com", "password": "Password123"}
+        "/api/v1/auth/login", json={"identifier": "refreshtest@nexprotest.com", "password": TEST_PASSWORD}
     )
     assert login_res.status_code == 200, login_res.text
 

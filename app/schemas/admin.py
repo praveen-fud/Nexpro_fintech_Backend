@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import EmailStr, Field
 
 from app.models.enums import FundingMethod, KycStatus, Role
-from app.schemas.common import CamelModel
+from app.schemas.common import CamelModel, MoneyAmount
 
 # Only these two roles can be created through the admin portal.
 # CUSTOMER accounts are always self-registered.
@@ -93,10 +93,10 @@ class FeeRuleResponse(CamelModel):
 
 class UpdateFeeRuleRequest(CamelModel):
     fee_type: str | None = Field(None, pattern="^(FIXED|PERCENTAGE)$")
-    fixed_amount: Decimal | None = Field(None, ge=0)
-    percentage: Decimal | None = Field(None, ge=0, le=100)
-    min_fee: Decimal | None = Field(None, ge=0)
-    max_fee: Decimal | None = Field(None, ge=0)
+    fixed_amount: MoneyAmount | None = Field(None, ge=0)
+    percentage: MoneyAmount | None = Field(None, ge=0, le=100)
+    min_fee: MoneyAmount | None = Field(None, ge=0)
+    max_fee: MoneyAmount | None = Field(None, ge=0)
     is_enabled: bool | None = None
 
 
@@ -112,9 +112,9 @@ class PlatformLimitResponse(CamelModel):
 
 
 class UpdatePlatformLimitRequest(CamelModel):
-    per_transaction: Decimal | None = Field(None, gt=0)
-    daily: Decimal | None = Field(None, gt=0)
-    monthly: Decimal | None = Field(None, gt=0)
+    per_transaction: MoneyAmount | None = Field(None, gt=0)
+    daily: MoneyAmount | None = Field(None, gt=0)
+    monthly: MoneyAmount | None = Field(None, gt=0)
 
 
 # ── Audit Logs ─────────────────────────────────────────────────────────────────

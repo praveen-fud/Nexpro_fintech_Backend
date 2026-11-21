@@ -13,7 +13,8 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.rate_limiter import limiter
+from app.schemas.common import MoneyAmount
+from app.core.rate_limit import rate_limit
 from app.models.enums import FundingMethod, KycStatus, Role
 from app.models.funding import FundingRequest
 from app.models.user import User
@@ -72,7 +73,7 @@ def _to_response(fr: FundingRequest, customer_name: str) -> FundingRequestRespon
 
 @router.get("/quote", response_model=FundingQuoteResponse)
 async def get_quote(
-    amount: Decimal, method: FundingMethod, db: AsyncSession = Depends(get_db)
+    amount: MoneyAmount, method: FundingMethod, db: AsyncSession = Depends(get_db)
 ) -> FundingQuoteResponse:
     if amount <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter an amount greater than zero.")
@@ -111,7 +112,11 @@ def _pay_link_key() -> str:
     return f"{settings.jwt_secret}:upi-pay-link"
 
 
-@router.post("/upi/payment-link", response_model=UpiPaymentLinkResponse)
+@router.post(
+    "/upi/payment-link",
+    response_model=UpiPaymentLinkResponse,
+    dependencies=[Depends(rate_limit("funding_write", "rate_limit_write"))],
+)
 async def create_upi_payment_link(
     body: UpiPaymentLinkBody,
     user: User = Depends(require_roles(Role.CUSTOMER)),
@@ -134,8 +139,11 @@ async def create_upi_payment_link(
     return UpiPaymentLinkResponse(token=token, expires_at=expires_at)
 
 
-@public_router.get("/upi-payment/{token}", response_model=PublicUpiPaymentResponse)
-@limiter.limit("30/minute")
+@public_router.get(
+    "/upi-payment/{token}",
+    response_model=PublicUpiPaymentResponse,
+    dependencies=[Depends(rate_limit("upi_link_open", "rate_limit_default"))],
+)
 async def open_upi_payment_link(request: Request, token: str) -> PublicUpiPaymentResponse:
     try:
         claims = jwt.decode(token, _pay_link_key(), algorithms=["HS256"])
@@ -176,7 +184,51 @@ async def get_beneficiary(
     )
 
 
-@router.post("", response_model=FundingRequestResponse, status_code=status.HTTP_201_CREATED)
+_INVALID_AMOUNT = HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter a valid amount.")
+
+# Bounded so an attacker cannot make us parse a multi-megabyte JSON string
+# out of a form field before the allowlist ever runs.
+_MAX_PAYMENT_DETAILS_CHARS = 4096
+
+
+def _parse_amount(raw: object) -> Decimal:
+    """Parse a client-supplied amount, rejecting anything non-finite.
+
+    ``Decimal("NaN")`` parses happily and then raises InvalidOperation on the
+    first comparison, so checking is_finite() here is what keeps a body of
+    ``{"amount": "NaN"}`` from becoming a 500.
+    """
+    try:
+        amount = Decimal(str(raw))
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        raise _INVALID_AMOUNT from exc
+    if not amount.is_finite():
+        raise _INVALID_AMOUNT
+    if amount.as_tuple().exponent < -2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Amount cannot be more precise than paise."
+        )
+    return amount
+
+
+def _parse_payment_details(raw: object) -> dict:
+    if not isinstance(raw, str):
+        return {}
+    if len(raw) > _MAX_PAYMENT_DETAILS_CHARS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Payment details are too large.")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Malformed payment details.") from exc
+    return parsed if isinstance(parsed, dict) else {}
+
+
+@router.post(
+    "",
+    response_model=FundingRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit("funding_create", "rate_limit_upload"))],
+)
 async def create_request(
     request: Request,
     user: User = Depends(require_roles(Role.CUSTOMER)),
@@ -191,6 +243,10 @@ async def create_request(
     content_type = request.headers.get("content-type", "")
     proof_path: str | None = None
 
+    # This endpoint accepts both multipart (with a proof file) and JSON, so it
+    # parses the body itself instead of going through a Pydantic model. That
+    # means every conversion below has to be defensive by hand — a raw
+    # json.loads or Decimal() here turns malformed input into a 500.
     if "multipart/form-data" in content_type:
         form = await request.form()
         method_raw = form.get("method")
@@ -199,22 +255,28 @@ async def create_request(
         proof = form.get("proof")
         if isinstance(proof, StarletteUploadFile):
             proof_path = await save_upload(proof, subdir=f"funding-proof/{user.id}")
-        payment_details = json.loads(payment_details_raw) if isinstance(payment_details_raw, str) else {}
+        payment_details = _parse_payment_details(payment_details_raw)
     else:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Malformed request body."
+            ) from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Malformed request body.")
         method_raw = body.get("method")
         amount_raw = body.get("amount")
         payment_details = body.get("paymentDetails", {})
+        if not isinstance(payment_details, dict):
+            payment_details = {}
 
     try:
         method = FundingMethod(method_raw)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported funding method.") from exc
 
-    try:
-        amount = Decimal(str(amount_raw))
-    except (TypeError, ValueError, ArithmeticError) as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter a valid amount.") from exc
+    amount = _parse_amount(amount_raw)
 
     if amount < MIN_AMOUNT or amount > MAX_AMOUNT:
         raise HTTPException(
@@ -273,7 +335,11 @@ async def card_config(user: User = Depends(require_roles(Role.CUSTOMER))) -> dic
     return {"enabled": razorpay_service.is_configured()}
 
 
-@router.post("/card/order", response_model=CardOrderResponse)
+@router.post(
+    "/card/order",
+    response_model=CardOrderResponse,
+    dependencies=[Depends(rate_limit("card_order", "rate_limit_write"))],
+)
 async def create_card_order(
     body: CardOrderBody,
     user: User = Depends(require_roles(Role.CUSTOMER)),
@@ -328,7 +394,11 @@ async def _credit_if_genuinely_paid(db: AsyncSession, *, order_id: str, payment_
     return await capture_card_payment(db, customer=customer, amount=amount, order_id=order_id, payment_id=payment_id)
 
 
-@router.post("/card/verify", response_model=FundingRequestResponse)
+@router.post(
+    "/card/verify",
+    response_model=FundingRequestResponse,
+    dependencies=[Depends(rate_limit("card_verify", "rate_limit_write"))],
+)
 async def verify_card_payment(
     body: CardVerifyBody,
     user: User = Depends(require_roles(Role.CUSTOMER)),

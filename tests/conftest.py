@@ -1,3 +1,4 @@
+import base64
 import os
 
 # Must happen before any `app.*` module is imported, since app.core.database
@@ -16,7 +17,15 @@ from app.models.enums import KycStatus, Role  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.security.passwords import hash_password  # noqa: E402
 
-TEST_PASSWORD = "Password123"
+TEST_PASSWORD = "Nx7!tradeWind2026"
+
+# A real 1x1 PNG. Uploads are validated by their leading bytes, so test
+# fixtures must be genuine files of the type they claim to be. Base64 keeps
+# the signature bytes out of the source as escape sequences.
+PNG_1PX = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -26,9 +35,9 @@ async def _fresh_database():
         await conn.run_sync(Base.metadata.create_all)
     # Each test logs in several times; start every test with a clean rate-limit
     # window so the production limit (10 logins/min) doesn't trip the suite.
-    from app.core.rate_limiter import limiter
+    from app.core.rate_limit import reset_all
 
-    limiter.reset()
+    reset_all()
     yield
     await engine.dispose()
     db_file = Path("test.db")

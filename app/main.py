@@ -1,36 +1,57 @@
+import logging
 import sys
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.core.config import get_settings
-from app.core.rate_limiter import limiter
-from app.routers import admin, auth, card_to_bank, funding, requests_inbox, kyc, limits, operations, support, transactions, users, wallet
+from app.core.config import ConfigurationError, get_settings
 
-settings = get_settings()
+logger = logging.getLogger(__name__)
 
-# Refuse to start in production with the insecure default secret.
-if settings.environment == "production" and settings.jwt_secret == "insecure-dev-secret-change-me-before-production-use":
-    print("FATAL: JWT_SECRET is set to the insecure default. Set a strong random secret before deploying.", file=sys.stderr)
-    sys.exit(1)
+# Settings validation is where every "unsafe to serve traffic" rule lives
+# (missing/placeholder JWT secret, wildcard CORS in production, SQLite in
+# production...). Failing here, loudly, is the entire point: a misconfigured
+# money API must not boot and quietly accept forgeable tokens.
+try:
+    settings = get_settings()
+except ConfigurationError as exc:
+    print(f"FATAL: refusing to start — {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
+
+from app.core.middleware import MaxBodySizeMiddleware, SecurityHeadersMiddleware  # noqa: E402
+from app.routers import (  # noqa: E402
+    admin,
+    auth,
+    card_to_bank,
+    funding,
+    kyc,
+    limits,
+    operations,
+    requests_inbox,
+    support,
+    transactions,
+    users,
+    wallet,
+)
 
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
     # Never expose the interactive docs in production — they reveal the full
     # API surface and can be used to probe endpoints without any tooling.
-    docs_url="/docs" if settings.environment != "production" else None,
-    redoc_url="/redoc" if settings.environment != "production" else None,
-    openapi_url="/openapi.json" if settings.environment != "production" else None,
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
-# Attach rate-limiter state so slowapi can find it on the app instance.
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Middleware order: the LAST one added is the outermost. We want security
+# headers stamped on every response (including rejections from the layers
+# below), then host validation, then CORS, then the body-size guard closest
+# to the application.
+app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_mb * 1024 * 1024)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,20 +61,13 @@ app.add_middleware(
     # * would accept anything, including headers injected by attackers.
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
+    max_age=600,
 )
 
+if "*" not in settings.trusted_hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
 
-@app.middleware("http")
-async def security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if settings.environment == "production":
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    return response
+app.add_middleware(SecurityHeadersMiddleware, settings=settings)
 
 
 @app.exception_handler(RequestValidationError)
@@ -75,6 +89,9 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Log server-side with the stack trace; return nothing specific to the
+    # caller. An error body that echoes the exception is free reconnaissance.
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"message": "Something went wrong while processing your request. Please try again."},

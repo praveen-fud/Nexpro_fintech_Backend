@@ -1,15 +1,20 @@
 from datetime import UTC, datetime
-from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.enums import KYC_STATUS_TRANSITIONS, KycDocumentStatus, KycDocumentType, KycStatus
+from app.models.enums import (
+    KYC_STATUS_TRANSITIONS,
+    KycDocumentStatus,
+    KycDocumentType,
+    KycStatus,
+)
 from app.models.kyc import KycDocument, KycProfile
 from app.models.user import User
+from app.schemas.kyc import BankAccountInfo, PersonalInfo
 from app.services import audit_service
-from app.services.file_storage import save_upload
+from app.services.file_storage import _safe_file_name, save_upload
 
 
 def _mask_account_number(account_number: str) -> str:
@@ -55,28 +60,34 @@ async def submit_kyc(
     db: AsyncSession,
     *,
     customer: User,
-    personal_info: dict[str, Any],
-    bank_account: dict[str, Any],
+    personal_info: PersonalInfo,
+    bank_account: BankAccountInfo,
     documents: dict[str, UploadFile],
 ) -> KycProfile:
+    """Persist a KYC submission.
+
+    Takes already-validated models rather than raw dicts: field shapes,
+    lengths and the account-number confirmation are enforced by
+    schemas.kyc before anything reaches this function.
+    """
     profile = await get_or_create_kyc_profile(db, customer.id)
     _ensure_transition(profile.status, KycStatus.UNDER_REVIEW)
 
     profile.status = KycStatus.UNDER_REVIEW
     profile.review_notes = None
     profile.submitted_at = datetime.now(UTC)
-    dob_raw = personal_info.get("dateOfBirth")
-    profile.date_of_birth = datetime.strptime(dob_raw, "%Y-%m-%d").date() if dob_raw else None
-    profile.address = personal_info.get("address")
-    profile.city = personal_info.get("city")
-    profile.state = personal_info.get("state")
-    profile.pin_code = personal_info.get("pinCode")
+    profile.date_of_birth = personal_info.date_of_birth
+    profile.address = personal_info.address
+    profile.city = personal_info.city
+    profile.state = personal_info.state
+    profile.pin_code = personal_info.pin_code
 
-    profile.account_holder_name = bank_account.get("accountHolderName")
-    account_number = bank_account.get("accountNumber", "")
-    profile.account_number_masked = _mask_account_number(account_number) if account_number else None
-    profile.ifsc = bank_account.get("ifsc")
-    profile.bank_name = (bank_account.get("bankName") or "").strip()[:100] or None
+    profile.account_holder_name = bank_account.account_holder_name
+    # Only the masked tail is stored; the full account number is discarded
+    # with the request.
+    profile.account_number_masked = _mask_account_number(bank_account.account_number)
+    profile.ifsc = bank_account.ifsc
+    profile.bank_name = bank_account.bank_name
 
     # Resubmission after REJECTED/ADDITIONAL_INFORMATION_REQUIRED: drop the
     # prior document rows so the profile doesn't accumulate duplicates of
@@ -96,7 +107,7 @@ async def submit_kyc(
             KycDocument(
                 kyc_profile_id=profile.id,
                 document_type=doc_type,
-                file_name=upload.filename or field_name,
+                file_name=_safe_file_name(upload.filename, field_name),
                 file_path=file_path,
                 status=KycDocumentStatus.SUBMITTED,
                 uploaded_at=datetime.now(UTC),

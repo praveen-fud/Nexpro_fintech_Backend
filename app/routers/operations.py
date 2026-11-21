@@ -47,6 +47,7 @@ from app.schemas.operations import (
     WalletListResponse,
 )
 from app.security.deps import require_roles
+from app.services.document_response import document_response
 from app.services.checklist_service import build_verification_checklist
 from app.services.funding_service import approve_funding_request, mark_under_review, reject_funding_request, request_additional_information
 from app.services.kyc_service import approve_kyc, reject_kyc, request_kyc_additional_information
@@ -260,14 +261,12 @@ async def get_funding_proof(
     fr = (
         await db.execute(select(FundingRequest).where(FundingRequest.id == funding_request_id))
     ).scalar_one_or_none()
-    if fr is None or not fr.proof_file_path or not Path(fr.proof_file_path).is_file():
+    if fr is None or not fr.proof_file_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No payment proof on file.")
-    # Inline + no-store: shown in the in-page viewer, never cached or saved by default.
-    return FileResponse(
-        fr.proof_file_path,
-        content_disposition_type="inline",
-        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-    )
+    # Inline + no-store: shown in the in-page viewer, never cached or saved by
+    # default. document_response pins the media type from the stored extension
+    # and 404s (rather than 500s) when the file is gone.
+    return document_response(fr.proof_file_path, Path(fr.proof_file_path).name, disposition="inline")
 
 
 @router.post("/funding-requests/{funding_request_id}/approve", response_model=FundingRequestResponse)
@@ -498,7 +497,7 @@ async def get_kyc_document(
     ).scalar_one_or_none()
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
-    return FileResponse(document.file_path, filename=document.file_name)
+    return document_response(document.file_path, document.file_name)
 
 
 # ── Customers ──────────────────────────────────────────────────────────────────

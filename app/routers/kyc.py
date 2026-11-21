@@ -1,23 +1,32 @@
 import json
 import uuid
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.rate_limit import rate_limit
 from app.models.enums import Role
 from app.models.kyc import KycDocument, KycProfile
 from app.models.user import User
 from app.schemas.kyc import (
+    BankAccountInfo,
     KycBankAccountResponse,
     KycDocumentResponse,
     KycPersonalInfoResponse,
     KycProfileResponse,
+    PersonalInfo,
 )
 from app.security.deps import require_roles
+from app.services.document_response import document_response
 from app.services.kyc_service import get_or_create_kyc_profile, submit_kyc
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 router = APIRouter(prefix="/kyc", tags=["kyc"])
 
@@ -72,27 +81,76 @@ async def get_my_kyc(
     return _to_response(profile)
 
 
-@router.post("/submit", response_model=KycProfileResponse, status_code=status.HTTP_201_CREATED)
+_MAX_JSON_FIELD_CHARS = 4096
+
+
+def _parse_json_field(raw: str, field_name: str, model: type[ModelT]) -> ModelT:
+    """Parse one JSON-encoded multipart field into a validated model.
+
+    These two fields arrive as JSON strings inside a multipart body (the
+    upload has to go in the same request), which means FastAPI cannot
+    validate them for us from the signature alone. Doing it explicitly here
+    is what stops unbounded, unchecked strings from reaching the database —
+    previously these were handed straight through as ``dict[str, Any]``.
+    """
+    if len(raw) > _MAX_JSON_FIELD_CHARS:
+        raise RequestValidationError(
+            [
+                {
+                    "loc": ("body", field_name),
+                    "msg": "This field is too large.",
+                    "type": "value_error",
+                }
+            ]
+        )
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RequestValidationError(
+            [{"loc": ("body", field_name), "msg": "Malformed JSON.", "type": "value_error"}]
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RequestValidationError(
+            [{"loc": ("body", field_name), "msg": "Expected an object.", "type": "value_error"}]
+        )
+
+    try:
+        return model.model_validate(parsed)
+    except ValidationError as exc:
+        # Re-raise through FastAPI's own error type so the response keeps the
+        # {message, fieldErrors} shape the frontend already understands, with
+        # the field path prefixed by which blob it came from.
+        raise RequestValidationError(
+            [
+                {**error, "loc": ("body", field_name, *(str(p) for p in error.get("loc", ())))}
+                for error in exc.errors()
+            ]
+        ) from exc
+
+
+@router.post(
+    "/submit",
+    response_model=KycProfileResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit("kyc_submit", "rate_limit_upload"))],
+)
 async def submit_kyc_endpoint(
-    personal_info: str = Form(..., alias="personalInfo"),
-    bank_account: str = Form(..., alias="bankAccount"),
+    personal_info: str = Form(..., alias="personalInfo", max_length=_MAX_JSON_FIELD_CHARS),
+    bank_account: str = Form(..., alias="bankAccount", max_length=_MAX_JSON_FIELD_CHARS),
     id_proof: UploadFile = File(..., alias="idProof"),
     address_proof: UploadFile = File(..., alias="addressProof"),
     pan_card: UploadFile = File(..., alias="panCard"),
     user: User = Depends(require_roles(Role.CUSTOMER)),
     db: AsyncSession = Depends(get_db),
 ) -> KycProfileResponse:
-    try:
-        personal_info_data = json.loads(personal_info)
-        bank_account_data = json.loads(bank_account)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid KYC submission payload.") from exc
+    personal = _parse_json_field(personal_info, "personalInfo", PersonalInfo)
+    bank = _parse_json_field(bank_account, "bankAccount", BankAccountInfo)
 
     profile = await submit_kyc(
         db,
         customer=user,
-        personal_info=personal_info_data,
-        bank_account=bank_account_data,
+        personal_info=personal,
+        bank_account=bank,
         documents={"idProof": id_proof, "addressProof": address_proof, "panCard": pan_card},
     )
     await db.refresh(profile, attribute_names=["documents"])
@@ -115,4 +173,4 @@ async def get_my_kyc_document(
     if row is None or row[1].user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
     document = row[0]
-    return FileResponse(document.file_path, filename=document.file_name)
+    return document_response(document.file_path, document.file_name)
