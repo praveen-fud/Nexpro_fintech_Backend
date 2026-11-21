@@ -26,6 +26,7 @@ from app.routers import (  # noqa: E402
     admin,
     auth,
     card_to_bank,
+    contact,
     funding,
     kyc,
     limits,
@@ -100,6 +101,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 API_PREFIX = "/api/v1"
 app.include_router(auth.router, prefix=API_PREFIX)
+app.include_router(contact.router, prefix=API_PREFIX)
 app.include_router(users.router, prefix=API_PREFIX)
 app.include_router(wallet.router, prefix=API_PREFIX)
 app.include_router(kyc.router, prefix=API_PREFIX)

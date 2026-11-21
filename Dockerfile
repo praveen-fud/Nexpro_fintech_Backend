@@ -13,4 +13,4 @@ EXPOSE 8000
 # accounts, no fixtures. app.seed (demo accounts + fake data) is dev-only
 # and is never run here; create production accounts with app.create_admin
 # instead (run manually, once, via shell access to this service).
-CMD ["sh", "-c", "alembic upgrade head && python -m app.bootstrap && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "alembic upgrade head && python -m app.bootstrap && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-server-header"]

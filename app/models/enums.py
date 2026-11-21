@@ -117,3 +117,14 @@ class SupportTicketStatus(str, enum.Enum):
     OPEN = "OPEN"
     PENDING = "PENDING"
     COMPLETED = "COMPLETED"
+
+
+class EnquirerType(str, enum.Enum):
+    BUSINESS = "BUSINESS"
+    INDIVIDUAL = "INDIVIDUAL"
+
+
+class ContactEnquiryStatus(str, enum.Enum):
+    NEW = "NEW"
+    IN_PROGRESS = "IN_PROGRESS"
+    CLOSED = "CLOSED"

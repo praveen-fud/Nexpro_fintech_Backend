@@ -7,6 +7,7 @@ across modules without circular imports.
 
 from app.models.audit import AuditLog
 from app.models.config import FeeRule, PlatformLimit
+from app.models.contact import ContactEnquiry
 from app.models.funding import FundingRequest, IdempotencyRecord, PaymentAttempt
 from app.models.kyc import KycDocument, KycProfile
 from app.models.support import SupportTicket
@@ -16,6 +17,7 @@ from app.models.wallet import Wallet, WalletLedgerEntry
 
 __all__ = [
     "AuditLog",
+    "ContactEnquiry",
     "FeeRule",
     "PlatformLimit",
     "FundingRequest",
