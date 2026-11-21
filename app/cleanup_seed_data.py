@@ -25,7 +25,6 @@ import argparse
 import asyncio
 
 from sqlalchemy import bindparam, text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
 
